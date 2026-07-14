@@ -51,9 +51,10 @@ Para que GitHub Actions pueda usar estas credenciales sin exponerlas públicamen
 * **Nombre:** `GDRIVE_CREDENTIALS`
   * **Valor:** Copia y pega **todo el contenido** del archivo JSON de credenciales que descargaste en el Paso 1 (abre el archivo con cualquier editor de texto y copia todo desde `{` hasta `}`).
 * **Nombre:** `GDRIVE_INPUT_FOLDER_ID`
-  * **Valor:** Pega el ID de tu carpeta de Google Drive donde están los insumos (ej. `Segmentación`, `Capacitación`, etc.).
+  * **Valor:** `14IcQo4amCE6c39vT7lHT8_FAWoJjcbXX` (El ID de tu carpeta **Inputs**).
 * **Nombre:** `GDRIVE_OUTPUT_FOLDER_ID`
-  * **Valor:** Pega el ID de tu carpeta de Google Drive de salida donde se subirá el reporte Excel generado.
+  * **Valor:** `1VJWfPGJnjyLRv3cHJ-r5fWOOuGmJ6ykO` (El ID de tu carpeta **Outputs**).
+
 
 ---
 
