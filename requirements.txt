@@ -2,3 +2,5 @@ streamlit
 pandas
 numpy
 openpyxl
+google-api-python-client
+google-auth
