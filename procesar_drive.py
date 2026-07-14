@@ -34,7 +34,7 @@ def get_drive_service():
     return build("drive", "v3", credentials=creds)
 
 def download_file(service, file_id, destination_path):
-    request = service.files().get_media(fileId=file_id)
+    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     fh = io.FileIO(destination_path, 'wb')
     downloader = MediaIoBaseDownload(fh, request)
     done = False
@@ -52,7 +52,12 @@ def upload_file(service, file_path, folder_id):
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         resumable=True
     )
-    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    file = service.files().create(
+        body=file_metadata, 
+        media_body=media, 
+        fields='id',
+        supportsAllDrives=True
+    ).execute()
     print(f"Reporte subido exitosamente a Google Drive con ID: {file.get('id')}")
 
 def main():
@@ -69,7 +74,12 @@ def main():
     # Listar archivos en la carpeta de entrada
     print("Listando archivos en la carpeta de origen...")
     query = f"'{input_folder_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
+    results = service.files().list(
+        q=query, 
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
     files = results.get("files", [])
 
     if not files:
