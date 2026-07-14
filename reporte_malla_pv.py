@@ -53,9 +53,23 @@ def procesar_segmentacion(file_obj):
 
 def procesar_capacitaciones(file_obj):
     file_obj.seek(0)
+    # Detectar dinámicamente la fila de cabecera buscando una columna clave
+    df_temp = pd.read_excel(file_obj, header=None, nrows=10)
+    header_row = 0
+    for idx, row in df_temp.iterrows():
+        row_vals = [str(x).strip().lower() for x in row.dropna()]
+        if any('fecha de cese' in val or 'cese' == val for val in row_vals) or \
+           any('documento de identidad' in val for val in row_vals):
+            header_row = idx
+            break
+
+    file_obj.seek(0)
     df = pd.read_excel(file_obj, 
                        dtype={'Número de documento de identidad principal': str, 'Número de persona': str}, 
-                       skiprows=2, skipfooter=4)
+                       skiprows=header_row)
+    
+    # Limpiar posibles filas vacías o de resumen al final
+    df = df[df['Número de persona'].notna() & df['Número de documento de identidad principal'].notna()]
     
     df['type'] = np.where(df['Fecha de cese'].isna() | (df['Fecha de cese'] == ''), 0, 1)
     df = df.sort_values(by=["Número de persona", "type"]).drop_duplicates(subset=["Número de persona"], keep="first")
@@ -67,6 +81,17 @@ def procesar_capacitaciones(file_obj):
 
 def procesar_estructura(file_obj):
     file_obj.seek(0)
+    # Detectar dinámicamente la fila de cabecera buscando una columna clave
+    df_temp = pd.read_excel(file_obj, header=None, nrows=10)
+    header_row = 0
+    for idx, row in df_temp.iterrows():
+        row_vals = [str(x).strip().lower() for x in row.dropna()]
+        if any('unidad de negocio' in val for val in row_vals) or \
+           any('documento de identidad' in val for val in row_vals):
+            header_row = idx
+            break
+
+    file_obj.seek(0)
     unidades_negocio = ["ADMINISTRACIÓN FOOD REGIONAL S.A.C.", "COMPAÑIA FOOD RETAIL S.A.C.", "PLAZA VEA ORIENTE S.A.C."]
     columnas = ["Número de documento de identidad principal", "Nombre de unidad de negocio", "Nombre del departamento", 
                 "Posición_Nombre", "Número de persona", "Nombre Completo", "Fecha de inicio de relación laboral",
@@ -74,8 +99,12 @@ def procesar_estructura(file_obj):
 
     df = pd.read_excel(file_obj, 
                        dtype={'Número de documento de identidad principal': str, 'ID Ofiplan': str, "Número de persona": str}, 
-                       skiprows=2)
+                       skiprows=header_row)
     df = df.rename(columns={'Nombre': 'Nombre Completo'})
+    
+    # Limpiar posibles filas vacías o de resumen al final
+    df = df[df['Número de documento de identidad principal'].notna()]
+    
     df = df[df["Nombre de unidad de negocio"].isin(unidades_negocio)][columnas]
 
     for col in ["Nombre Completo", "Posición_Nombre", "Nombre de ubicación"]:
