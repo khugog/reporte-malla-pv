@@ -4,10 +4,10 @@ on:
   # Permite ejecutar el flujo manualmente desde la pestaña Actions en GitHub
   workflow_dispatch:
 
-  # Ejecución programada (todos los días a las 17:00 UTC / 12:00 PM hora de Perú)
+  # Ejecución programada (todos los días a las 18:00 UTC / 1:00 PM hora de Perú)
   # Solo genera el reporte si hay archivos pendientes en Inputs; luego los archiva en Historial/YYYY-MM-DD/
   schedule:
-    - cron: '0 17 * * *'
+    - cron: '0 18 * * *'
 
 jobs:
   run-report:
