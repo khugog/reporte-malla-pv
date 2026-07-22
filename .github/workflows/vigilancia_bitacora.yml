@@ -1,16 +1,15 @@
-name: Ejecutar Reporte Malla Automatizado
+name: Vigilancia de Inputs (Bitacora)
 
 on:
   # Permite ejecutar el flujo manualmente desde la pestaña Actions en GitHub
   workflow_dispatch:
 
-  # Ejecución programada (todos los días a las 17:00 UTC / 12:00 PM hora de Perú)
-  # Solo genera el reporte si hay archivos pendientes en Inputs; luego los archiva en Historial/YYYY-MM-DD/
+  # Ejecución programada cada 15 minutos
   schedule:
-    - cron: '0 17 * * *'
+    - cron: '*/15 * * * *'
 
 jobs:
-  run-report:
+  vigilancia:
     runs-on: ubuntu-latest
 
     steps:
@@ -26,13 +25,11 @@ jobs:
     - name: Instalar Dependencias
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install google-api-python-client google-auth
 
-    - name: Ejecutar Procesamiento Condicional de Reporte
+    - name: Registrar estado de Inputs en la bitacora
       env:
         GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
         GDRIVE_INPUT_FOLDER_ID: ${{ secrets.GDRIVE_INPUT_FOLDER_ID }}
-        GDRIVE_OUTPUT_FOLDER_ID: ${{ secrets.GDRIVE_OUTPUT_FOLDER_ID }}
-        GDRIVE_HISTORIAL_FOLDER_ID: ${{ secrets.GDRIVE_HISTORIAL_FOLDER_ID }}
       run: |
-        python procesar_drive.py
+        python vigilancia_bitacora.py
