@@ -1,9 +1,7 @@
-import os
 import io
-import json
+import os
 from datetime import datetime
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
+from zoneinfo import ZoneInfo
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
 # Importar funciones de lógica de negocio del script existente
@@ -20,18 +18,10 @@ from reporte_malla_pv import (
     procesar_base_limpia,
     procesamiento_ciclos
 )
+from drive_common import get_drive_service, find_or_create_subfolder, move_file
 
-def get_drive_service():
-    creds_json = os.environ.get("GDRIVE_CREDENTIALS")
-    if not creds_json:
-        raise ValueError("La variable de entorno 'GDRIVE_CREDENTIALS' no está configurada.")
-    
-    info = json.loads(creds_json)
-    creds = Credentials.from_service_account_info(
-        info, 
-        scopes=["https://www.googleapis.com/auth/drive"]
-    )
-    return build("drive", "v3", credentials=creds)
+TZ_PERU = ZoneInfo("America/Lima")
+
 
 def download_file(service, file_id, destination_path):
     request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
@@ -64,9 +54,12 @@ def main():
     # Obtener IDs de carpetas desde las variables de entorno
     input_folder_id = os.environ.get("GDRIVE_INPUT_FOLDER_ID")
     output_folder_id = os.environ.get("GDRIVE_OUTPUT_FOLDER_ID")
-    
-    if not input_folder_id or not output_folder_id:
-        raise ValueError("GDRIVE_INPUT_FOLDER_ID y GDRIVE_OUTPUT_FOLDER_ID deben estar configurados.")
+    historial_folder_id = os.environ.get("GDRIVE_HISTORIAL_FOLDER_ID")
+
+    if not input_folder_id or not output_folder_id or not historial_folder_id:
+        raise ValueError(
+            "GDRIVE_INPUT_FOLDER_ID, GDRIVE_OUTPUT_FOLDER_ID y GDRIVE_HISTORIAL_FOLDER_ID deben estar configurados."
+        )
 
     print("Iniciando conexión con Google Drive API...")
     service = get_drive_service()
@@ -82,10 +75,6 @@ def main():
     ).execute()
     files = results.get("files", [])
 
-    if not files:
-        print("No se encontraron archivos en la carpeta de origen.")
-        return
-
     # Buscar archivos requeridos por patrón de nombre (equivalente a streamlit)
     file_ids = {}
     for file in files:
@@ -99,11 +88,27 @@ def main():
         elif name.startswith('dataaconsiderar'):
             file_ids['dataaconsiderar'] = (file['id'], file['name'])
 
-    # Validar que todos los archivos requeridos estén presentes
-    required_keys = ['segmentacion', 'capacitacion', 'estructura', 'dataaconsiderar']
-    missing = [k for k in required_keys if k not in file_ids]
-    if missing:
-        raise ValueError(f"Faltan archivos requeridos en la carpeta de Google Drive: {missing}")
+    # 'dataaconsiderar' es un archivo base fijo: permanece siempre en Inputs y su sola
+    # presencia no debe disparar el procesamiento. Los 3 insumos de ronda sí lo disparan.
+    trigger_keys = ['segmentacion', 'capacitacion', 'estructura']
+    base_keys = ['dataaconsiderar']
+
+    # Procesamiento condicional: si no llegó ningún insumo de ronda, no se genera reporte
+    if not any(k in file_ids for k in trigger_keys):
+        print("No hay archivos pendientes en Inputs. No se genera reporte.")
+        return
+
+    # Si hay algunos insumos de ronda pero no todos, es un estado inválido que requiere atención
+    missing_trigger = [k for k in trigger_keys if k not in file_ids]
+    if missing_trigger:
+        raise ValueError(f"Faltan archivos requeridos en la carpeta de Google Drive: {missing_trigger}")
+
+    missing_base = [k for k in base_keys if k not in file_ids]
+    if missing_base:
+        raise ValueError(
+            f"Falta el archivo base fijo en la carpeta de Google Drive: {missing_base}. "
+            "Este archivo debe permanecer siempre en Inputs."
+        )
 
     # Descargar archivos
     local_paths = {
@@ -151,8 +156,8 @@ def main():
         df_ciclos = procesamiento_ciclos(df_base_limpia, niveles_interes)
 
     # Guardar reporte resultante
-    today = datetime.today().strftime('%Y-%m-%d')
-    output_filename = f"Reporte_Malla_PlazaVea_{today}.xlsx"
+    today_str = datetime.now(TZ_PERU).strftime('%Y-%m-%d')
+    output_filename = f"Reporte_Malla_PlazaVea_{today_str}.xlsx"
     
     print(f"Guardando reporte localmente como '{output_filename}'...")
     import pandas as pd
@@ -163,12 +168,24 @@ def main():
     print("Subiendo reporte a la carpeta de salida en Google Drive...")
     upload_file(service, output_filename, output_folder_id)
 
+    # Archivar los insumos de ronda en Historial/YYYY-MM-DD/ y dejar Inputs limpia.
+    # 'dataaconsiderar' NO se archiva: es un archivo base fijo que se conserva en Inputs
+    # hasta que el usuario indique explícitamente reemplazarlo.
+    print(f"Archivando insumos procesados en Historial/{today_str}/...")
+    historial_subfolder_id = find_or_create_subfolder(service, historial_folder_id, today_str)
+    for key, (file_id, original_name) in file_ids.items():
+        if key in base_keys:
+            continue
+        move_file(service, file_id, input_folder_id, historial_subfolder_id)
+        print(f"Archivado: {original_name}")
+    print("DataaConsiderar2026 se conserva en Inputs (archivo base, no se archiva).")
+
     # Limpieza de archivos temporales descargados y generados localmente
     print("Limpiando archivos temporales...")
     for path in list(local_paths.values()) + [output_filename]:
         if os.path.exists(path):
             os.remove(path)
-            
+
     print("¡Proceso completado exitosamente!")
 
 if __name__ == "__main__":
