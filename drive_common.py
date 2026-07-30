@@ -20,6 +20,19 @@ def get_drive_service():
     return build("drive", "v3", credentials=creds)
 
 
+def get_sheets_service():
+    creds_json = os.environ.get("GDRIVE_CREDENTIALS")
+    if not creds_json:
+        raise ValueError("La variable de entorno 'GDRIVE_CREDENTIALS' no está configurada.")
+
+    info = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return build("sheets", "v4", credentials=creds)
+
+
 def find_file_in_folder(service, folder_id, name):
     escaped_name = name.replace("'", "\\'")
     query = f"'{folder_id}' in parents and name = '{escaped_name}' and trashed = false"
