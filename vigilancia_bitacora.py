@@ -4,12 +4,20 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from drive_common import download_text, find_file_in_folder, get_drive_service, upsert_text_file
+from drive_common import (
+    download_text,
+    find_file_in_folder,
+    find_or_create_spreadsheet,
+    get_drive_service,
+    get_sheets_service,
+    upsert_text_file,
+)
 
 TZ_PERU = ZoneInfo("America/Lima")
 BITACORA_NAME = "bitacora_revisiones.txt"
 STATE_NAME = ".vigilancia_state.json"
-INTERNAL_NAMES = {BITACORA_NAME.lower(), STATE_NAME.lower()}
+ESTADO_SHEET_NAME = "Estado_Vigilancia"
+INTERNAL_NAMES = {BITACORA_NAME.lower(), STATE_NAME.lower(), ESTADO_SHEET_NAME.lower()}
 
 
 def construir_snapshot(files):
@@ -45,6 +53,36 @@ def actualizar_bitacora(existing_content, today_str, timestamp_str, status):
 
     nuevo_contenido += f"{timestamp_str} (hora Perú) - {status}\n"
     return nuevo_contenido
+
+
+def escribir_estado_sheet(sheets_service, spreadsheet_id, es_nuevo, timestamp_str, status):
+    tab_name = "Estado"
+
+    if es_nuevo:
+        # Un spreadsheet recién creado trae una pestaña por defecto con nombre
+        # dependiente del idioma de la cuenta (p. ej. "Hoja 1" o "Sheet1");
+        # la renombramos para tener un nombre fijo y predecible.
+        metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        primer_sheet_id = metadata["sheets"][0]["properties"]["sheetId"]
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{
+                "updateSheetProperties": {
+                    "properties": {"sheetId": primer_sheet_id, "title": tab_name},
+                    "fields": "title"
+                }
+            }]}
+        ).execute()
+
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"{tab_name}!A1:B2",
+        valueInputOption="RAW",
+        body={"values": [
+            ["Última revisión (hora Perú)", "Estado"],
+            [timestamp_str, status]
+        ]}
+    ).execute()
 
 
 def main():
@@ -88,6 +126,10 @@ def main():
         service, input_folder_id, STATE_NAME,
         json.dumps(current_snapshot), mime_type="application/json"
     )
+
+    estado_spreadsheet_id, es_nuevo = find_or_create_spreadsheet(service, input_folder_id, ESTADO_SHEET_NAME)
+    sheets_service = get_sheets_service()
+    escribir_estado_sheet(sheets_service, estado_spreadsheet_id, es_nuevo, timestamp_str, status)
 
     print(f"[{timestamp_str}] {status}")
 
