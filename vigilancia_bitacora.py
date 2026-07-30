@@ -55,15 +55,18 @@ def actualizar_bitacora(existing_content, today_str, timestamp_str, status):
     return nuevo_contenido
 
 
-def escribir_estado_sheet(sheets_service, spreadsheet_id, es_nuevo, timestamp_str, status):
+def escribir_estado_sheet(sheets_service, spreadsheet_id, timestamp_str, status):
     tab_name = "Estado"
 
-    if es_nuevo:
-        # Un spreadsheet recién creado trae una pestaña por defecto con nombre
-        # dependiente del idioma de la cuenta (p. ej. "Hoja 1" o "Sheet1");
-        # la renombramos para tener un nombre fijo y predecible.
-        metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-        primer_sheet_id = metadata["sheets"][0]["properties"]["sheetId"]
+    # No asumimos que la pestaña ya se llama "Estado" solo porque el archivo ya
+    # existía: una corrida anterior pudo haber creado el archivo y fallado antes
+    # de completar el renombrado. Se verifica el nombre real cada vez.
+    metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    hojas = metadata.get("sheets", [])
+    nombres_existentes = [h["properties"]["title"] for h in hojas]
+
+    if tab_name not in nombres_existentes:
+        primer_sheet_id = hojas[0]["properties"]["sheetId"]
         sheets_service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
             body={"requests": [{
@@ -127,9 +130,9 @@ def main():
         json.dumps(current_snapshot), mime_type="application/json"
     )
 
-    estado_spreadsheet_id, es_nuevo = find_or_create_spreadsheet(service, input_folder_id, ESTADO_SHEET_NAME)
+    estado_spreadsheet_id, _ = find_or_create_spreadsheet(service, input_folder_id, ESTADO_SHEET_NAME)
     sheets_service = get_sheets_service()
-    escribir_estado_sheet(sheets_service, estado_spreadsheet_id, es_nuevo, timestamp_str, status)
+    escribir_estado_sheet(sheets_service, estado_spreadsheet_id, timestamp_str, status)
 
     print(f"[{timestamp_str}] {status}")
 
