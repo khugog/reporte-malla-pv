@@ -77,6 +77,35 @@ def upsert_text_file(service, folder_id, name, content, mime_type="text/plain"):
     return created["id"]
 
 
+def find_or_create_spreadsheet(service, folder_id, name):
+    escaped_name = name.replace("'", "\\'")
+    query = (
+        f"'{folder_id}' in parents and name = '{escaped_name}' "
+        "and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false"
+    )
+    results = service.files().list(
+        q=query,
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
+    files = results.get("files", [])
+    if files:
+        return files[0]["id"], False
+
+    metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+        "parents": [folder_id]
+    }
+    created = service.files().create(
+        body=metadata,
+        fields="id",
+        supportsAllDrives=True
+    ).execute()
+    return created["id"], True
+
+
 def find_or_create_subfolder(service, parent_id, name):
     escaped_name = name.replace("'", "\\'")
     query = (
