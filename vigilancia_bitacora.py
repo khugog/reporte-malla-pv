@@ -19,7 +19,6 @@ STATE_NAME = ".vigilancia_state.json"
 ESTADO_SHEET_NAME = "Estado_Vigilancia"
 INTERNAL_NAMES = {BITACORA_NAME.lower(), STATE_NAME.lower(), ESTADO_SHEET_NAME.lower()}
 
-
 def construir_snapshot(files):
     relevantes = [f for f in files if f["name"].lower() not in INTERNAL_NAMES]
     return {f["id"]: f["modifiedTime"] for f in relevantes}
