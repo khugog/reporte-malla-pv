@@ -157,7 +157,7 @@ def main():
 
     # Guardar reporte resultante
     today_str = datetime.now(TZ_PERU).strftime('%Y-%m-%d')
-    output_filename = f"Reporte_Malla_PlazaVea_{today_str}.xlsx"
+    output_filename = f"Reporte_Malla_Makro_{today_str}.xlsx"
     
     print(f"Guardando reporte localmente como '{output_filename}'...")
     import pandas as pd

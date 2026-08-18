@@ -48,7 +48,11 @@ def procesar_segmentacion(file_obj):
     file_obj.seek(0)
     df = pd.read_excel(file_obj, dtype={'Documento': str})
     df = df[df['ESTADO DEL CURSO'].astype(str).str.lower() == 'activo']
-    df['FINALIZACIÓN DEL CURSO'] = pd.to_datetime(df['FINALIZACIÓN DEL CURSO'], errors='coerce')
+    # El export de Segmentación de Makro no trae 'FINALIZACIÓN DEL CURSO': trae
+    # 'ULTIMA EVALUACIÓN' en su lugar. Se normaliza al nombre que usa el resto del
+    # pipeline para no tener que ramificar la lógica más adelante.
+    col_fecha_fin = 'FINALIZACIÓN DEL CURSO' if 'FINALIZACIÓN DEL CURSO' in df.columns else 'ULTIMA EVALUACIÓN'
+    df['FINALIZACIÓN DEL CURSO'] = pd.to_datetime(df[col_fecha_fin], errors='coerce')
     return df
 
 def procesar_capacitaciones(file_obj):
@@ -92,7 +96,7 @@ def procesar_estructura(file_obj):
             break
 
     file_obj.seek(0)
-    unidades_negocio = ["ADMINISTRACIÓN FOOD REGIONAL S.A.C.", "COMPAÑIA FOOD RETAIL S.A.C.", "PLAZA VEA ORIENTE S.A.C."]
+    unidades_negocio = ["ADMINISTRACIÓN FOOD REGIONAL S.A.C.", "COMPAÑIA FOOD RETAIL S.A.C.", "PLAZA VEA ORIENTE S.A.C.", "MAKRO SUPERMAYORISTA S.A."]
     columnas = ["Número de documento de identidad principal", "Nombre de unidad de negocio", "Nombre del departamento", 
                 "Posición_Nombre", "Número de persona", "Nombre Completo", "Fecha de inicio de relación laboral",
                 "ID Ofiplan", "Fecha de nacimiento de persona", "Nombre de ubicación"]
@@ -121,19 +125,20 @@ def procesar_estructura(file_obj):
 
 def procesamiento_reporte(df_estructura, df_capacitacion, df_segmentacion, file_data):
     file_data.seek(0)
-    # Cursos
-    df_cursos = pd.read_excel(file_data, sheet_name='plazaVea')
+    # Cursos (hoja 'Makro': mapeo de cursos/ciclos propio de Makro, distinto al de plazaVea)
+    df_cursos = pd.read_excel(file_data, sheet_name='Makro')
     df_cursos = df_cursos.drop_duplicates(subset=['Nombre de Curso'], keep='last').set_index('Nombre de Curso')
     niveles_interes = df_cursos['Ciclo'].dropna().unique().tolist()
-    
+
     file_data.seek(0)
     # Retiros (Base histórica)
     df_retiros = pd.read_excel(file_data, sheet_name='Retiros', dtype={'DNI': str})
     df_retiros = df_retiros.drop_duplicates(subset=['DNI'], keep='last').set_index('DNI')
-    
+
     file_data.seek(0)
-    # Jefes
-    df_jefes = pd.read_excel(file_data, sheet_name='Jefes- plazavea')
+    # Jefes (hoja 'Jefe- Makro': responsables por ubicación de Makro; a diferencia de
+    # 'Jefes- plazavea' no trae columna 'Lima/provincia', se maneja más abajo)
+    df_jefes = pd.read_excel(file_data, sheet_name='Jefe- Makro')
     df_jefes['Ubicación Estructura'] = df_jefes['Ubicación Estructura'].astype(str).str.upper()
     df_jefes = df_jefes.drop_duplicates(subset=['Ubicación Estructura'], keep='last').set_index('Ubicación Estructura')
 
@@ -172,7 +177,10 @@ def procesamiento_reporte(df_estructura, df_capacitacion, df_segmentacion, file_
     # Asignación inicial de Retiros desde el maestro
     df_nuevo['Retiros'] = df_nuevo['DNI'].map(df_retiros['Código']).fillna(0).astype(int)
     
-    df_nuevo['Lima/provincia'] = df_nuevo['Ubicación'].map(df_jefes['Lima/provincia']).fillna('NA')
+    if 'Lima/provincia' in df_jefes.columns:
+        df_nuevo['Lima/provincia'] = df_nuevo['Ubicación'].map(df_jefes['Lima/provincia']).fillna('NA')
+    else:
+        df_nuevo['Lima/provincia'] = 'NA'
     df_nuevo['Ubicación_1'] = df_nuevo['Ubicación'].map(df_jefes['Ubicación formato indicado'])
     df_nuevo['Formato'] = df_nuevo['Ubicación'].map(df_jefes['Formato']).fillna('NA')
     df_nuevo['L/P'] = df_nuevo['Ubicación'].map(df_jefes['Lugar']).fillna('NA')
@@ -262,8 +270,8 @@ def procesar_base_limpia(df_original, filtros):
     return df_filtrado
 
 def procesamiento_ciclos(df_limpia, niveles_interes):
-    df_pv = df_limpia[df_limpia['Formato'] != 'Makro']
-    df_ciclos = df_pv[df_pv['Nivel'].isin(niveles_interes)].copy()
+    df_makro = df_limpia[df_limpia['Formato'] == 'Makro']
+    df_ciclos = df_makro[df_makro['Nivel'].isin(niveles_interes)].copy()
 
     columnas_map = {
         'Nivel': 'Ciclo', 'Nuevo Nombre de curso': 'Nombre de Curso', 'Tipo de Curso': 'Tipo de curso',
@@ -347,7 +355,7 @@ def generar_reporte_malla_pv(uploaded_files):
             st.download_button(
                 label="Descargar Reporte Malla Aprendizaje PV",
                 data=excel_data,
-                file_name=f"Reporte_Malla_PlazaVea_{today}.xlsx",
+                file_name=f"Reporte_Malla_Makro_{today}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary"
             )
