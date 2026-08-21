@@ -1,0 +1,39 @@
+name: Ejecutar Reporte Malla Plaza Vea Automatizado
+
+on:
+  # Permite ejecutar el flujo manualmente desde la pestaña Actions en GitHub
+  workflow_dispatch:
+
+  # Ejecución programada (todos los días a las 18:00 UTC / 1:00 PM hora de Perú)
+  # Solo genera el reporte si hay archivos pendientes en Inputs; luego los archiva en Historial/YYYY-MM-DD/
+  schedule:
+    - cron: '0 18 * * *'
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout del Repositorio
+      uses: actions/checkout@v4
+
+    - name: Configurar Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: Instalar Dependencias
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Ejecutar Procesamiento Condicional de Reporte
+      env:
+        FORMATO: PlazaVea
+        GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+        GDRIVE_INPUT_FOLDER_ID: ${{ secrets.GDRIVE_INPUT_FOLDER_ID_PLAZAVEA }}
+        GDRIVE_OUTPUT_FOLDER_ID: ${{ secrets.GDRIVE_OUTPUT_FOLDER_ID_PLAZAVEA }}
+        GDRIVE_HISTORIAL_FOLDER_ID: ${{ secrets.GDRIVE_HISTORIAL_FOLDER_ID_PLAZAVEA }}
+      run: |
+        python procesar_drive.py
