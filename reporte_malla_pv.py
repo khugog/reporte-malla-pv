@@ -6,6 +6,28 @@ import os
 from datetime import datetime
 
 # ==========================================
+# 0. CONFIGURACION POR MARCA/FORMATO
+# ==========================================
+# Cada marca tiene su propia hoja de cursos/ciclos y su propia hoja de
+# responsables dentro de DataaConsiderar2026.xlsx, y su propio valor en la
+# columna 'Formato' de esa hoja de responsables (usado para filtrar el
+# reporte final a solo esa marca en procesamiento_ciclos).
+FORMATOS_CONFIG = {
+    'Makro': {
+        'sheet_cursos': 'Makro',
+        'sheet_jefes': 'Jefe- Makro',
+        'valor_formato': 'Makro',
+        'nombre_reporte': 'Makro',
+    },
+    'PlazaVea': {
+        'sheet_cursos': 'plazaVea',
+        'sheet_jefes': 'Jefes- plazavea',
+        'valor_formato': 'Plaza Vea',
+        'nombre_reporte': 'PlazaVea',
+    },
+}
+
+# ==========================================
 # 1. FUNCIONES UTILITARIAS
 # ==========================================
 
@@ -123,10 +145,12 @@ def procesar_estructura(file_obj):
 # 3. PROCESAMIENTO CENTRAL
 # ==========================================
 
-def procesamiento_reporte(df_estructura, df_capacitacion, df_segmentacion, file_data):
+def procesamiento_reporte(df_estructura, df_capacitacion, df_segmentacion, file_data, formato='Makro'):
+    config = FORMATOS_CONFIG[formato]
+
     file_data.seek(0)
-    # Cursos (hoja 'Makro': mapeo de cursos/ciclos propio de Makro, distinto al de plazaVea)
-    df_cursos = pd.read_excel(file_data, sheet_name='Makro')
+    # Cursos: mapeo de cursos/ciclos propio de cada marca (hoja distinta por marca)
+    df_cursos = pd.read_excel(file_data, sheet_name=config['sheet_cursos'])
     df_cursos = df_cursos.drop_duplicates(subset=['Nombre de Curso'], keep='last').set_index('Nombre de Curso')
     niveles_interes = df_cursos['Ciclo'].dropna().unique().tolist()
 
@@ -136,9 +160,10 @@ def procesamiento_reporte(df_estructura, df_capacitacion, df_segmentacion, file_
     df_retiros = df_retiros.drop_duplicates(subset=['DNI'], keep='last').set_index('DNI')
 
     file_data.seek(0)
-    # Jefes (hoja 'Jefe- Makro': responsables por ubicación de Makro; a diferencia de
-    # 'Jefes- plazavea' no trae columna 'Lima/provincia', se maneja más abajo)
-    df_jefes = pd.read_excel(file_data, sheet_name='Jefe- Makro')
+    # Jefes: responsables por ubicación, hoja distinta por marca. La hoja de
+    # Makro no trae columna 'Lima/provincia' (a diferencia de plazaVea), se
+    # maneja mas abajo.
+    df_jefes = pd.read_excel(file_data, sheet_name=config['sheet_jefes'])
     df_jefes['Ubicación Estructura'] = df_jefes['Ubicación Estructura'].astype(str).str.upper()
     df_jefes = df_jefes.drop_duplicates(subset=['Ubicación Estructura'], keep='last').set_index('Ubicación Estructura')
 
@@ -269,9 +294,10 @@ def procesar_base_limpia(df_original, filtros):
     
     return df_filtrado
 
-def procesamiento_ciclos(df_limpia, niveles_interes):
-    df_makro = df_limpia[df_limpia['Formato'] == 'Makro']
-    df_ciclos = df_makro[df_makro['Nivel'].isin(niveles_interes)].copy()
+def procesamiento_ciclos(df_limpia, niveles_interes, formato='Makro'):
+    valor_formato = FORMATOS_CONFIG[formato]['valor_formato']
+    df_marca = df_limpia[df_limpia['Formato'] == valor_formato]
+    df_ciclos = df_marca[df_marca['Nivel'].isin(niveles_interes)].copy()
 
     columnas_map = {
         'Nivel': 'Ciclo', 'Nuevo Nombre de curso': 'Nombre de Curso', 'Tipo de Curso': 'Tipo de curso',
@@ -299,8 +325,9 @@ def procesamiento_ciclos(df_limpia, niveles_interes):
 # 6. FUNCIÓN DE ENRUTAMIENTO (STREAMLIT)
 # ==========================================
 
-def generar_reporte_malla_pv(uploaded_files):
-    st.info("Iniciando procesamiento de datos para el Reporte Malla Aprendizaje Plaza Vea...")
+def generar_reporte_malla_pv(uploaded_files, formato='Makro'):
+    nombre_reporte = FORMATOS_CONFIG[formato]['nombre_reporte']
+    st.info(f"Iniciando procesamiento de datos para el Reporte Malla Aprendizaje {nombre_reporte}...")
     with st.status("Procesando Reporte Malla Aprendizaje...", expanded=True) as status:
         st.write("Buscando Archivos Cargados...")
         file_segmentacion, file_capacitacion, file_estructura, file_data = Buscar_Archivos_Memoria_MallaPv(uploaded_files)
@@ -327,8 +354,8 @@ def generar_reporte_malla_pv(uploaded_files):
             df_seg = procesar_segmentacion(file_segmentacion)
             
             st.write("Procesando cruce de información...")
-            df_reporte, niveles_interes = procesamiento_reporte(df_est, df_cap, df_seg, file_data)
-            
+            df_reporte, niveles_interes = procesamiento_reporte(df_est, df_cap, df_seg, file_data, formato=formato)
+
             st.write("Aplicando limpieza y filtros...")
             filtros_a_aplicar = [
                 marcar_formato_invalido,
@@ -338,9 +365,9 @@ def generar_reporte_malla_pv(uploaded_files):
                 ejecutar_limpieza_final_retiros
             ]
             df_base_limpia = procesar_base_limpia(df_reporte, filtros_a_aplicar)
-            
+
             st.write("Procesando formato Ciclos...")
-            df_ciclos = procesamiento_ciclos(df_base_limpia, niveles_interes)
+            df_ciclos = procesamiento_ciclos(df_base_limpia, niveles_interes, formato=formato)
 
             st.write("Generando archivo Excel en memoria...")
             output = io.BytesIO()
@@ -353,9 +380,9 @@ def generar_reporte_malla_pv(uploaded_files):
             
             today = datetime.today().strftime('%Y-%m-%d')
             st.download_button(
-                label="Descargar Reporte Malla Aprendizaje PV",
+                label=f"Descargar Reporte Malla Aprendizaje {nombre_reporte}",
                 data=excel_data,
-                file_name=f"Reporte_Malla_Makro_{today}.xlsx",
+                file_name=f"Reporte_Malla_{nombre_reporte}_{today}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary"
             )

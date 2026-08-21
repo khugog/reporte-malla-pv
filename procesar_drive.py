@@ -16,7 +16,8 @@ from reporte_malla_pv import (
     marcar_ubicacion_central,
     ejecutar_limpieza_final_retiros,
     procesar_base_limpia,
-    procesamiento_ciclos
+    procesamiento_ciclos,
+    FORMATOS_CONFIG
 )
 from drive_common import get_drive_service, find_or_create_subfolder, move_file
 
@@ -55,6 +56,12 @@ def main():
     input_folder_id = os.environ.get("GDRIVE_INPUT_FOLDER_ID")
     output_folder_id = os.environ.get("GDRIVE_OUTPUT_FOLDER_ID")
     historial_folder_id = os.environ.get("GDRIVE_HISTORIAL_FOLDER_ID")
+    # 'Makro' o 'PlazaVea': decide que hojas de DataaConsiderar2026 usar y a
+    # que marca filtrar el reporte final. Cada marca corre en su propio
+    # workflow de GitHub Actions, apuntando a sus propias carpetas de Drive.
+    formato = os.environ.get("FORMATO", "Makro")
+    if formato not in FORMATOS_CONFIG:
+        raise ValueError(f"FORMATO invalido: {formato!r}. Debe ser uno de: {list(FORMATOS_CONFIG.keys())}")
 
     if not input_folder_id or not output_folder_id or not historial_folder_id:
         raise ValueError(
@@ -139,9 +146,9 @@ def main():
         print("Cargando y limpiando segmentación...")
         df_seg = procesar_segmentacion(file_seg)
         
-        print("Ejecutando cruce de datos principal...")
-        df_reporte, niveles_interes = procesamiento_reporte(df_est, df_cap, df_seg, file_data)
-        
+        print(f"Ejecutando cruce de datos principal (formato: {formato})...")
+        df_reporte, niveles_interes = procesamiento_reporte(df_est, df_cap, df_seg, file_data, formato=formato)
+
         print("Aplicando filtros de retiros...")
         filtros_a_aplicar = [
             marcar_formato_invalido,
@@ -151,13 +158,14 @@ def main():
             ejecutar_limpieza_final_retiros
         ]
         df_base_limpia = procesar_base_limpia(df_reporte, filtros_a_aplicar)
-        
+
         print("Generando pestaña de Ciclos...")
-        df_ciclos = procesamiento_ciclos(df_base_limpia, niveles_interes)
+        df_ciclos = procesamiento_ciclos(df_base_limpia, niveles_interes, formato=formato)
 
     # Guardar reporte resultante
     today_str = datetime.now(TZ_PERU).strftime('%Y-%m-%d')
-    output_filename = f"Reporte_Malla_Makro_{today_str}.xlsx"
+    nombre_reporte = FORMATOS_CONFIG[formato]['nombre_reporte']
+    output_filename = f"Reporte_Malla_{nombre_reporte}_{today_str}.xlsx"
     
     print(f"Guardando reporte localmente como '{output_filename}'...")
     import pandas as pd
