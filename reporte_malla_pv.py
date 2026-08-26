@@ -18,12 +18,16 @@ FORMATOS_CONFIG = {
         'sheet_jefes': 'Jefe- Makro',
         'valor_formato': 'Makro',
         'nombre_reporte': 'Makro',
+        # Makro ya no entrega Estructura + Capacitación por separado: entrega un
+        # solo archivo "employees.xlsx" que trae ambos datos combinados.
+        'usa_employees': True,
     },
     'PlazaVea': {
         'sheet_cursos': 'plazaVea',
         'sheet_jefes': 'Jefes- plazavea',
         'valor_formato': 'Plaza Vea',
         'nombre_reporte': 'PlazaVea',
+        'usa_employees': False,
     },
 }
 
@@ -35,12 +39,15 @@ def Buscar_Archivos_Memoria_MallaPv(uploaded_files):
     file_segmentacion = None
     file_capacitacion = None
     file_estructura = None
+    file_employees = None
     file_data = None
 
     for file in uploaded_files:
         name = file.name.lower()
         if name.startswith('segment'):
             file_segmentacion = file
+        elif name.startswith('employees'):
+            file_employees = file
         elif name.startswith('capacita'):
             file_capacitacion = file
         elif name.startswith('9.- estructura'):
@@ -48,7 +55,7 @@ def Buscar_Archivos_Memoria_MallaPv(uploaded_files):
         elif name.startswith('dataaconsiderar'):
             file_data = file
 
-    return file_segmentacion, file_capacitacion, file_estructura, file_data
+    return file_segmentacion, file_capacitacion, file_estructura, file_employees, file_data
 
 def corregir_palabras_area(df, columna='Área'):
     correcciones = {
@@ -141,11 +148,78 @@ def procesar_estructura(file_obj):
 
     return df
 
+def combinar_estructura_y_capacitacion(df_estructura, df_capacitacion):
+    """Combina Estructura + Capacitación en un solo DataFrame 'df_personal',
+    replicando exactamente el cruce por DNI que antes hacía procesamiento_reporte
+    (Fecha de cese viene de Capacitación, todo lo demás de Estructura). Solo se
+    usa para las marcas que todavía entregan estos 2 archivos por separado."""
+    df_cap_idx = df_capacitacion.drop_duplicates(
+        subset=['Número de documento de identidad principal'], keep='last'
+    ).set_index('Número de documento de identidad principal')
+
+    df_personal = df_estructura.copy()
+    df_personal['Fecha de cese'] = df_personal['Número de documento de identidad principal'].map(
+        df_cap_idx['Fecha de cese']
+    )
+    return df_personal
+
+def procesar_employees(file_obj):
+    """Reemplaza a Estructura + Capacitación para las marcas cuyo sistema de
+    origen ya entrega un solo archivo "employees.xlsx" (hoja 'Empleados') con
+    los datos de personal y la fecha de cese combinados."""
+    file_obj.seek(0)
+    df = pd.read_excel(file_obj, sheet_name='Empleados',
+                       dtype={'DNI': str, 'Número de persona': str, 'Número de empleado': str})
+
+    # Limpiar posibles filas vacías o de resumen al final
+    df = df[df['DNI'].notna()]
+
+    # El nombre viene partido en 4 columnas en vez de una sola "Nombre" como en
+    # Estructura. Estructura entregaba "Apellidos, Nombres" (formato que ya usa
+    # el resto del reporte); se arma aqui igual para no cambiar lo que ve el
+    # usuario en la columna "Nombre del colaborador".
+    for col in ['Primer nombre', 'Segundo nombre', 'Primer apellido', 'Segundo apellido']:
+        df[col] = df[col].fillna('').astype(str).str.strip()
+    apellidos = (df['Primer apellido'] + ' ' + df['Segundo apellido']).str.replace(r'\s+', ' ', regex=True).str.strip()
+    nombres = (df['Primer nombre'] + ' ' + df['Segundo nombre']).str.replace(r'\s+', ' ', regex=True).str.strip()
+    df['Nombre Completo'] = (apellidos + ', ' + nombres).str.strip(', ').str.strip()
+
+    df = df.rename(columns={
+        'DNI': 'Número de documento de identidad principal',
+        'Unidad de negocio': 'Nombre de unidad de negocio',
+        'Ubicación': 'Nombre de ubicación',
+        'Departamento': 'Nombre del departamento',
+        'Puesto': 'Posición_Nombre',
+        'Fecha de ingreso': 'Fecha de inicio de relación laboral',
+    })
+
+    unidades_negocio = ["ADMINISTRACIÓN FOOD REGIONAL S.A.C.", "COMPAÑIA FOOD RETAIL S.A.C.", "PLAZA VEA ORIENTE S.A.C.", "MAKRO SUPERMAYORISTA S.A."]
+    df = df[df["Nombre de unidad de negocio"].isin(unidades_negocio)]
+
+    for col in ["Nombre Completo", "Posición_Nombre", "Nombre de ubicación"]:
+        df[col] = df[col].astype(str).str.title()
+
+    df['Fecha de inicio de relación laboral'] = pd.to_datetime(df['Fecha de inicio de relación laboral'], errors='coerce')
+    df['Fecha de cese'] = pd.to_datetime(df['Fecha de cese'], errors='coerce')
+
+    # Igual que hacía Capacitación: si una persona aparece dos veces (ej. reingreso),
+    # se prioriza el registro activo (sin fecha de cese) sobre el cesado.
+    df['type'] = np.where(df['Fecha de cese'].isna(), 0, 1)
+    df = df.sort_values(by=['Número de documento de identidad principal', 'type']) \
+           .drop_duplicates(subset=['Número de documento de identidad principal'], keep='first') \
+           .drop(columns=['type'])
+
+    columnas = ["Número de documento de identidad principal", "Nombre de unidad de negocio", "Nombre del departamento",
+                "Posición_Nombre", "Número de persona", "Nombre Completo", "Fecha de inicio de relación laboral",
+                "Nombre de ubicación", "Fecha de cese"]
+
+    return df[columnas]
+
 # ==========================================
 # 3. PROCESAMIENTO CENTRAL
 # ==========================================
 
-def procesamiento_reporte(df_estructura, df_capacitacion, df_segmentacion, file_data, formato='Makro'):
+def procesamiento_reporte(df_personal, df_segmentacion, file_data, formato='Makro'):
     config = FORMATOS_CONFIG[formato]
 
     file_data.seek(0)
@@ -167,13 +241,12 @@ def procesamiento_reporte(df_estructura, df_capacitacion, df_segmentacion, file_
     df_jefes['Ubicación Estructura'] = df_jefes['Ubicación Estructura'].astype(str).str.upper()
     df_jefes = df_jefes.drop_duplicates(subset=['Ubicación Estructura'], keep='last').set_index('Ubicación Estructura')
 
-    # Estructura y Capacitación
-    df_estructura['Nombre de ubicación'] = df_estructura['Nombre de ubicación'].astype(str).str.upper()
-    df_estructura = df_estructura.drop_duplicates(subset=['Número de documento de identidad principal'], keep='last')
-    df_estructura = df_estructura.set_index('Número de documento de identidad principal')
-    
-    df_capacitacion = df_capacitacion.drop_duplicates(subset=['Número de documento de identidad principal'], keep='last')
-    df_capacitacion = df_capacitacion.set_index('Número de documento de identidad principal')
+    # Personal (antes "Estructura" + "Capacitación" cruzadas por DNI; ahora puede
+    # venir ya combinado de procesar_employees(), o combinado a mano con
+    # combinar_estructura_y_capacitacion() para las marcas que aún usan 2 archivos)
+    df_personal['Nombre de ubicación'] = df_personal['Nombre de ubicación'].astype(str).str.upper()
+    df_personal = df_personal.drop_duplicates(subset=['Número de documento de identidad principal'], keep='last')
+    df_personal = df_personal.set_index('Número de documento de identidad principal')
 
     # Construcción de base nueva
     df_nuevo = pd.DataFrame()
@@ -189,15 +262,19 @@ def procesamiento_reporte(df_estructura, df_capacitacion, df_segmentacion, file_
     df_nuevo['Tipo de Curso'] = df_nuevo['Nombre del Curso'].map(df_cursos['Escuela'])
     df_nuevo['Nivel'] = df_nuevo['Nombre del Curso'].map(df_cursos['Ciclo'])
 
-    df_nuevo['Ubicación'] = df_nuevo['DNI'].map(df_estructura['Nombre de ubicación']).fillna('NA')
-    df_nuevo['Número de la persona'] = df_nuevo['DNI'].map(df_estructura['Número de persona']).fillna('NA')
-    df_nuevo['Nombre del Colaborador'] = df_nuevo['DNI'].map(df_estructura['Nombre Completo']).fillna('NA')
-    df_nuevo['Departamento'] = df_nuevo['DNI'].map(df_estructura['Nombre del departamento']).fillna('NA')
-    df_nuevo['Posición'] = df_nuevo['DNI'].map(df_estructura['Posición_Nombre']).fillna('NA')
-    df_nuevo['Empresa'] = df_nuevo['DNI'].map(df_estructura['Nombre de unidad de negocio']).fillna('NA')
-    df_nuevo['Fecha de ingreso'] = df_nuevo['DNI'].map(df_estructura['Fecha de inicio de relación laboral'])
-    df_nuevo['Fecha De nacimiento'] = df_nuevo['DNI'].map(df_estructura['Fecha de nacimiento de persona'])
-    df_nuevo['Fecha de cese'] = df_nuevo['DNI'].map(df_capacitacion['Fecha de cese'])
+    df_nuevo['Ubicación'] = df_nuevo['DNI'].map(df_personal['Nombre de ubicación']).fillna('NA')
+    df_nuevo['Número de la persona'] = df_nuevo['DNI'].map(df_personal['Número de persona']).fillna('NA')
+    df_nuevo['Nombre del Colaborador'] = df_nuevo['DNI'].map(df_personal['Nombre Completo']).fillna('NA')
+    df_nuevo['Departamento'] = df_nuevo['DNI'].map(df_personal['Nombre del departamento']).fillna('NA')
+    df_nuevo['Posición'] = df_nuevo['DNI'].map(df_personal['Posición_Nombre']).fillna('NA')
+    df_nuevo['Empresa'] = df_nuevo['DNI'].map(df_personal['Nombre de unidad de negocio']).fillna('NA')
+    df_nuevo['Fecha de ingreso'] = df_nuevo['DNI'].map(df_personal['Fecha de inicio de relación laboral'])
+    # 'Fecha de nacimiento de persona' solo existe cuando el personal viene de
+    # Estructura (no la trae employees.xlsx); no se usa en el reporte final
+    # (se descarta antes de armar la hoja "Ciclos"), así que es seguro omitirla.
+    if 'Fecha de nacimiento de persona' in df_personal.columns:
+        df_nuevo['Fecha De nacimiento'] = df_nuevo['DNI'].map(df_personal['Fecha de nacimiento de persona'])
+    df_nuevo['Fecha de cese'] = df_nuevo['DNI'].map(df_personal['Fecha de cese'])
 
     # Asignación inicial de Retiros desde el maestro
     df_nuevo['Retiros'] = df_nuevo['DNI'].map(df_retiros['Código']).fillna(0).astype(int)
@@ -326,35 +403,50 @@ def procesamiento_ciclos(df_limpia, niveles_interes, formato='Makro'):
 # ==========================================
 
 def generar_reporte_malla_pv(uploaded_files, formato='Makro'):
-    nombre_reporte = FORMATOS_CONFIG[formato]['nombre_reporte']
+    config = FORMATOS_CONFIG[formato]
+    usa_employees = config.get('usa_employees', False)
+    nombre_reporte = config['nombre_reporte']
     st.info(f"Iniciando procesamiento de datos para el Reporte Malla Aprendizaje {nombre_reporte}...")
     with st.status("Procesando Reporte Malla Aprendizaje...", expanded=True) as status:
         st.write("Buscando Archivos Cargados...")
-        file_segmentacion, file_capacitacion, file_estructura, file_data = Buscar_Archivos_Memoria_MallaPv(uploaded_files)
-        
-        if not all([file_segmentacion, file_capacitacion, file_estructura, file_data]):
+        file_segmentacion, file_capacitacion, file_estructura, file_employees, file_data = Buscar_Archivos_Memoria_MallaPv(uploaded_files)
+
+        if usa_employees:
+            requeridos = [file_segmentacion, file_employees, file_data]
+        else:
+            requeridos = [file_segmentacion, file_capacitacion, file_estructura, file_data]
+
+        if not all(requeridos):
             faltantes = []
             if not file_segmentacion: faltantes.append("Segmentación")
-            if not file_capacitacion: faltantes.append("Capacitación")
-            if not file_estructura: faltantes.append("9.- Estructura")
+            if usa_employees:
+                if not file_employees: faltantes.append("Employees")
+            else:
+                if not file_capacitacion: faltantes.append("Capacitación")
+                if not file_estructura: faltantes.append("9.- Estructura")
             if not file_data: faltantes.append("Data a Considerar")
-            
+
             status.update(label="Faltan archivos esenciales", state="error", expanded=True)
             st.error(f"Por favor asegúrate de haber cargado los archivos base. Faltan: {', '.join(faltantes)}")
             return
 
         try:
-            st.write("Cargando Estructura...")
-            df_est = procesar_estructura(file_estructura)
-            
-            st.write("Cargando Capacitación...")
-            df_cap = procesar_capacitaciones(file_capacitacion)
-            
+            if usa_employees:
+                st.write("Cargando Employees...")
+                df_personal = procesar_employees(file_employees)
+            else:
+                st.write("Cargando Estructura...")
+                df_est = procesar_estructura(file_estructura)
+
+                st.write("Cargando Capacitación...")
+                df_cap = procesar_capacitaciones(file_capacitacion)
+                df_personal = combinar_estructura_y_capacitacion(df_est, df_cap)
+
             st.write("Cargando Segmentación...")
             df_seg = procesar_segmentacion(file_segmentacion)
-            
+
             st.write("Procesando cruce de información...")
-            df_reporte, niveles_interes = procesamiento_reporte(df_est, df_cap, df_seg, file_data, formato=formato)
+            df_reporte, niveles_interes = procesamiento_reporte(df_personal, df_seg, file_data, formato=formato)
 
             st.write("Aplicando limpieza y filtros...")
             filtros_a_aplicar = [

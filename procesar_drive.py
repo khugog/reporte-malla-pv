@@ -1,5 +1,6 @@
 import io
 import os
+from contextlib import ExitStack
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
@@ -8,6 +9,8 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from reporte_malla_pv import (
     procesar_estructura,
     procesar_capacitaciones,
+    procesar_employees,
+    combinar_estructura_y_capacitacion,
     procesar_segmentacion,
     procesamiento_reporte,
     marcar_formato_invalido,
@@ -62,6 +65,9 @@ def main():
     formato = os.environ.get("FORMATO", "Makro")
     if formato not in FORMATOS_CONFIG:
         raise ValueError(f"FORMATO invalido: {formato!r}. Debe ser uno de: {list(FORMATOS_CONFIG.keys())}")
+    # Makro entrega un solo archivo "employees.xlsx" en vez de Estructura +
+    # Capacitación por separado; otras marcas pueden seguir con los 2 archivos.
+    usa_employees = FORMATOS_CONFIG[formato].get('usa_employees', False)
 
     if not input_folder_id or not output_folder_id or not historial_folder_id:
         raise ValueError(
@@ -88,6 +94,8 @@ def main():
         name = file['name'].lower()
         if name.startswith('segment'):
             file_ids['segmentacion'] = (file['id'], file['name'])
+        elif name.startswith('employees'):
+            file_ids['employees'] = (file['id'], file['name'])
         elif name.startswith('capacita'):
             file_ids['capacitacion'] = (file['id'], file['name'])
         elif name.startswith('9.- estructura'):
@@ -96,8 +104,11 @@ def main():
             file_ids['dataaconsiderar'] = (file['id'], file['name'])
 
     # 'dataaconsiderar' es un archivo base fijo: permanece siempre en Inputs y su sola
-    # presencia no debe disparar el procesamiento. Los 3 insumos de ronda sí lo disparan.
-    trigger_keys = ['segmentacion', 'capacitacion', 'estructura']
+    # presencia no debe disparar el procesamiento. Los insumos de ronda sí lo disparan.
+    if usa_employees:
+        trigger_keys = ['segmentacion', 'employees']
+    else:
+        trigger_keys = ['segmentacion', 'capacitacion', 'estructura']
     base_keys = ['dataaconsiderar']
 
     # Procesamiento condicional: si no llegó ningún insumo de ronda, no se genera reporte
@@ -118,36 +129,49 @@ def main():
         )
 
     # Descargar archivos
-    local_paths = {
-        'segmentacion': 'segmentacion.xlsx',
-        'capacitacion': 'capacitacion.xlsx',
-        'estructura': 'estructura.xlsx',
-        'dataaconsiderar': 'dataaconsiderar.xlsx'
-    }
+    if usa_employees:
+        local_paths = {
+            'segmentacion': 'segmentacion.xlsx',
+            'employees': 'employees.xlsx',
+            'dataaconsiderar': 'dataaconsiderar.xlsx'
+        }
+    else:
+        local_paths = {
+            'segmentacion': 'segmentacion.xlsx',
+            'capacitacion': 'capacitacion.xlsx',
+            'estructura': 'estructura.xlsx',
+            'dataaconsiderar': 'dataaconsiderar.xlsx'
+        }
 
     for key, (file_id, original_name) in file_ids.items():
         print(f"Encontrado: {original_name}")
         download_file(service, file_id, local_paths[key])
 
     print("Procesando datos...")
-    
-    # Abrir archivos y ejecutar la lógica de procesamiento
-    with open(local_paths['segmentacion'], 'rb') as file_seg, \
-         open(local_paths['capacitacion'], 'rb') as file_cap, \
-         open(local_paths['estructura'], 'rb') as file_est, \
-         open(local_paths['dataaconsiderar'], 'rb') as file_data:
 
-        print("Cargando y limpiando estructura...")
-        df_est = procesar_estructura(file_est)
-        
-        print("Cargando y limpiando capacitaciones...")
-        df_cap = procesar_capacitaciones(file_cap)
-        
+    # Abrir archivos y ejecutar la lógica de procesamiento
+    with ExitStack() as stack:
+        file_seg = stack.enter_context(open(local_paths['segmentacion'], 'rb'))
+        file_data = stack.enter_context(open(local_paths['dataaconsiderar'], 'rb'))
+
+        if usa_employees:
+            file_emp = stack.enter_context(open(local_paths['employees'], 'rb'))
+            print("Cargando y limpiando employees...")
+            df_personal = procesar_employees(file_emp)
+        else:
+            file_cap = stack.enter_context(open(local_paths['capacitacion'], 'rb'))
+            file_est = stack.enter_context(open(local_paths['estructura'], 'rb'))
+            print("Cargando y limpiando estructura...")
+            df_est = procesar_estructura(file_est)
+            print("Cargando y limpiando capacitaciones...")
+            df_cap = procesar_capacitaciones(file_cap)
+            df_personal = combinar_estructura_y_capacitacion(df_est, df_cap)
+
         print("Cargando y limpiando segmentación...")
         df_seg = procesar_segmentacion(file_seg)
-        
+
         print(f"Ejecutando cruce de datos principal (formato: {formato})...")
-        df_reporte, niveles_interes = procesamiento_reporte(df_est, df_cap, df_seg, file_data, formato=formato)
+        df_reporte, niveles_interes = procesamiento_reporte(df_personal, df_seg, file_data, formato=formato)
 
         print("Aplicando filtros de retiros...")
         filtros_a_aplicar = [

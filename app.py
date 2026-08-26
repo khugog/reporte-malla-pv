@@ -7,7 +7,10 @@ st.title('Generador de Reporte Malla Aprendizaje')
 
 formato = st.sidebar.selectbox("Marca", list(FORMATOS_CONFIG.keys()))
 
-st.write("Este reporte requiere que hayas cargado los archivos: Segmentación, Capacitación, 9.- Estructura y DataaConsiderar en el menú lateral.")
+if FORMATOS_CONFIG[formato].get('usa_employees', False):
+    st.write("Este reporte requiere que hayas cargado los archivos: Segmentación, Employees y DataaConsiderar en el menú lateral.")
+else:
+    st.write("Este reporte requiere que hayas cargado los archivos: Segmentación, Capacitación, 9.- Estructura y DataaConsiderar en el menú lateral.")
 
 st.sidebar.header("Archivos de Entrada")
 st.sidebar.write("Sube aquí todos los archivos necesarios para tu reporte.")
