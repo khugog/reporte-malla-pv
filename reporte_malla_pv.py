@@ -27,7 +27,9 @@ FORMATOS_CONFIG = {
         'sheet_jefes': 'Jefes- plazavea',
         'valor_formato': 'Plaza Vea',
         'nombre_reporte': 'PlazaVea',
-        'usa_employees': False,
+        # Igual que Makro: ya no entrega Estructura + Capacitación por separado,
+        # entrega un solo archivo "employees.xlsx" con ambos datos combinados.
+        'usa_employees': True,
     },
 }
 
