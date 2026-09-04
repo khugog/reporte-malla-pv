@@ -31,6 +31,31 @@ FORMATOS_CONFIG = {
         # entrega un solo archivo "employees.xlsx" con ambos datos combinados.
         'usa_employees': True,
     },
+    'Oslo': {
+        'sheet_cursos': 'Oslo',
+        'sheet_jefes': 'Jefe- Oslo',
+        'valor_formato': 'Oslo',
+        'nombre_reporte': 'Oslo',
+        'usa_employees': True,
+        # A diferencia de Makro/PlazaVea, la columna de cruce en la hoja de
+        # jefes de Oslo se llama distinto (mismo contenido: nombre de
+        # ubicación), por eso hay que indicarlo explícitamente.
+        'col_jefes_join': 'Ubicación Estructura (Nombre de ubicación)',
+        'campo_join': 'Ubicación',
+    },
+    'Merkao': {
+        'sheet_cursos': 'Merkao',
+        'sheet_jefes': 'Jefes- merkao',
+        'valor_formato': 'Merkao',
+        'nombre_reporte': 'Merkao',
+        'usa_employees': True,
+        # Merkao es distinto: su hoja de jefes no asigna responsables por
+        # Ubicación (local físico) sino por Departamento (ej. "DF -
+        # Commercial-Expansion"). Confirmado revisando los valores reales de
+        # 'Jefes- merkao' en DataaConsiderar2026.xlsx (03-sep-2026).
+        'col_jefes_join': 'Ubicación Estructura (Nombre del departamento)',
+        'campo_join': 'Departamento',
+    },
 }
 
 # ==========================================
@@ -127,8 +152,14 @@ def procesar_estructura(file_obj):
             break
 
     file_obj.seek(0)
-    unidades_negocio = ["ADMINISTRACIÓN FOOD REGIONAL S.A.C.", "COMPAÑIA FOOD RETAIL S.A.C.", "PLAZA VEA ORIENTE S.A.C.", "MAKRO SUPERMAYORISTA S.A."]
-    columnas = ["Número de documento de identidad principal", "Nombre de unidad de negocio", "Nombre del departamento", 
+    # NOTA: "OPERADORA DE SERVICIOS LOGISTICOS S.A.C." (Oslo) y "DIGITAL FOODS
+    # S.A.C." (Merkao) se agregaron por coincidencia del prefijo de ubicación
+    # ("OPL"/"DF") visto en las hojas 'Jefe- Oslo'/'Jefes- merkao' de
+    # DataaConsiderar2026.xlsx. Falta confirmar contra employees.xlsx real
+    # (no disponible al momento de escribir esto) que la razón social sea
+    # exactamente esta; si el reporte de Oslo/Merkao sale vacío, revisar aquí.
+    unidades_negocio = ["ADMINISTRACIÓN FOOD REGIONAL S.A.C.", "COMPAÑIA FOOD RETAIL S.A.C.", "PLAZA VEA ORIENTE S.A.C.", "MAKRO SUPERMAYORISTA S.A.", "OPERADORA DE SERVICIOS LOGISTICOS S.A.C.", "DIGITAL FOODS S.A.C."]
+    columnas = ["Número de documento de identidad principal", "Nombre de unidad de negocio", "Nombre del departamento",
                 "Posición_Nombre", "Número de persona", "Nombre Completo", "Fecha de inicio de relación laboral",
                 "ID Ofiplan", "Fecha de nacimiento de persona", "Nombre de ubicación"]
 
@@ -195,7 +226,9 @@ def procesar_employees(file_obj):
         'Fecha de ingreso': 'Fecha de inicio de relación laboral',
     })
 
-    unidades_negocio = ["ADMINISTRACIÓN FOOD REGIONAL S.A.C.", "COMPAÑIA FOOD RETAIL S.A.C.", "PLAZA VEA ORIENTE S.A.C.", "MAKRO SUPERMAYORISTA S.A."]
+    # Ver nota en procesar_estructura() sobre Oslo/Merkao: mapeo aún no
+    # confirmado contra un employees.xlsx real de esas marcas.
+    unidades_negocio = ["ADMINISTRACIÓN FOOD REGIONAL S.A.C.", "COMPAÑIA FOOD RETAIL S.A.C.", "PLAZA VEA ORIENTE S.A.C.", "MAKRO SUPERMAYORISTA S.A.", "OPERADORA DE SERVICIOS LOGISTICOS S.A.C.", "DIGITAL FOODS S.A.C."]
     df = df[df["Nombre de unidad de negocio"].isin(unidades_negocio)]
 
     for col in ["Nombre Completo", "Posición_Nombre", "Nombre de ubicación"]:
@@ -236,12 +269,14 @@ def procesamiento_reporte(df_personal, df_segmentacion, file_data, formato='Makr
     df_retiros = df_retiros.drop_duplicates(subset=['DNI'], keep='last').set_index('DNI')
 
     file_data.seek(0)
-    # Jefes: responsables por ubicación, hoja distinta por marca. La hoja de
-    # Makro no trae columna 'Lima/provincia' (a diferencia de plazaVea), se
-    # maneja mas abajo.
+    # Jefes: responsables por ubicación (o por departamento, en el caso de
+    # Merkao), hoja distinta por marca. La hoja de Makro no trae columna
+    # 'Lima/provincia' (a diferencia de plazaVea), se maneja mas abajo.
+    col_jefes_join = config.get('col_jefes_join', 'Ubicación Estructura')
+    campo_join = config.get('campo_join', 'Ubicación')
     df_jefes = pd.read_excel(file_data, sheet_name=config['sheet_jefes'])
-    df_jefes['Ubicación Estructura'] = df_jefes['Ubicación Estructura'].astype(str).str.upper()
-    df_jefes = df_jefes.drop_duplicates(subset=['Ubicación Estructura'], keep='last').set_index('Ubicación Estructura')
+    df_jefes[col_jefes_join] = df_jefes[col_jefes_join].astype(str).str.upper()
+    df_jefes = df_jefes.drop_duplicates(subset=[col_jefes_join], keep='last').set_index(col_jefes_join)
 
     # Personal (antes "Estructura" + "Capacitación" cruzadas por DNI; ahora puede
     # venir ya combinado de procesar_employees(), o combinado a mano con
@@ -281,15 +316,20 @@ def procesamiento_reporte(df_personal, df_segmentacion, file_data, formato='Makr
     # Asignación inicial de Retiros desde el maestro
     df_nuevo['Retiros'] = df_nuevo['DNI'].map(df_retiros['Código']).fillna(0).astype(int)
     
+    # Clave de cruce contra df_jefes: 'Ubicación' para Makro/PlazaVea/Oslo,
+    # 'Departamento' para Merkao (ver 'campo_join' en FORMATOS_CONFIG). Se
+    # calcula aparte para no alterar el casing que se muestra en la columna
+    # 'Departamento' del reporte final.
+    clave_jefes = df_nuevo[campo_join].astype(str).str.upper()
     if 'Lima/provincia' in df_jefes.columns:
-        df_nuevo['Lima/provincia'] = df_nuevo['Ubicación'].map(df_jefes['Lima/provincia']).fillna('NA')
+        df_nuevo['Lima/provincia'] = clave_jefes.map(df_jefes['Lima/provincia']).fillna('NA')
     else:
         df_nuevo['Lima/provincia'] = 'NA'
-    df_nuevo['Ubicación_1'] = df_nuevo['Ubicación'].map(df_jefes['Ubicación formato indicado'])
-    df_nuevo['Formato'] = df_nuevo['Ubicación'].map(df_jefes['Formato']).fillna('NA')
-    df_nuevo['L/P'] = df_nuevo['Ubicación'].map(df_jefes['Lugar']).fillna('NA')
-    df_nuevo['Responsable'] = df_nuevo['Ubicación'].map(df_jefes['Responsable']).fillna('NA')
-    df_nuevo['Representante'] = df_nuevo['Ubicación'].map(df_jefes['Representante']).fillna('NA')
+    df_nuevo['Ubicación_1'] = clave_jefes.map(df_jefes['Ubicación formato indicado'])
+    df_nuevo['Formato'] = clave_jefes.map(df_jefes['Formato']).fillna('NA')
+    df_nuevo['L/P'] = clave_jefes.map(df_jefes['Lugar']).fillna('NA')
+    df_nuevo['Responsable'] = clave_jefes.map(df_jefes['Responsable']).fillna('NA')
+    df_nuevo['Representante'] = clave_jefes.map(df_jefes['Representante']).fillna('NA')
 
     # Limpieza de fechas
     for col in ['Fecha de Inicio', 'Fecha de Finalización', 'Fecha de ingreso', 'Fecha de cese', 'Fecha De nacimiento']:
