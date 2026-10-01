@@ -1,8 +1,11 @@
 import os
 import re
 import unicodedata
+from collections import defaultdict
 
 from drive_common import get_drive_service, move_file
+
+FECHA_EN_NOMBRE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 # Carpeta compartida donde Cursalab va dejando automáticamente los archivos de
 # Segmentación de las 4 marcas, todos mezclados en un mismo lugar.
@@ -43,6 +46,15 @@ def detectar_marca(nombre_archivo):
     return None
 
 
+def clave_de_orden(archivo):
+    # Se usa la fecha que trae el propio nombre del archivo (ej. "2026-09-30")
+    # para saber cuál es el más reciente entre varios de la misma marca; si el
+    # nombre no trae fecha, se cae de respaldo a la fecha de modificación en Drive.
+    match = FECHA_EN_NOMBRE.search(archivo["name"])
+    fecha_nombre = match.group(1) if match else ""
+    return (fecha_nombre, archivo.get("modifiedTime", ""))
+
+
 def main():
     if not CURSALAB_FOLDER_ID:
         raise ValueError("La variable de entorno 'GDRIVE_CURSALAB_FOLDER_ID' no está configurada.")
@@ -57,7 +69,7 @@ def main():
     query = f"'{CURSALAB_FOLDER_ID}' in parents and trashed = false"
     results = service.files().list(
         q=query,
-        fields="files(id, name, mimeType)",
+        fields="files(id, name, mimeType, modifiedTime)",
         supportsAllDrives=True,
         includeItemsFromAllDrives=True
     ).execute()
@@ -71,16 +83,33 @@ def main():
         print("No hay archivos pendientes en 'archivos cursalab'.")
         return
 
+    candidatos_por_marca = defaultdict(list)
     sin_identificar = []
     for archivo in archivos:
         marca = detectar_marca(archivo["name"])
         if marca is None:
             sin_identificar.append(archivo["name"])
             continue
+        candidatos_por_marca[marca].append(archivo)
+
+    # Si Cursalab dejó más de un archivo pendiente para la misma marca (por
+    # ejemplo, nadie corrió esto en varios días y se acumularon 2 o 3), solo se
+    # sube a Inputs el más reciente; los demás se dejan intactos en Cursalab
+    # para no mandar varias Segmentaciones a la vez y confundir el reporte.
+    for marca, candidatos in candidatos_por_marca.items():
+        candidatos.sort(key=clave_de_orden)
+        mas_reciente = candidatos[-1]
+        anteriores = candidatos[:-1]
 
         destino_id = DESTINOS[marca]
-        move_file(service, archivo["id"], CURSALAB_FOLDER_ID, destino_id)
-        print(f"Movido: '{archivo['name']}' -> Inputs de {marca}")
+        move_file(service, mas_reciente["id"], CURSALAB_FOLDER_ID, destino_id)
+        print(f"Movido: '{mas_reciente['name']}' -> Inputs de {marca}")
+
+        for viejo in anteriores:
+            print(
+                f"Aviso: '{viejo['name']}' es una Segmentación de {marca} más antigua "
+                "que la que se acaba de mover; se dejó sin mover en 'archivos cursalab'."
+            )
 
     if sin_identificar:
         print(
