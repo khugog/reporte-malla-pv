@@ -55,6 +55,22 @@ def clave_de_orden(archivo):
     return (fecha_nombre, archivo.get("modifiedTime", ""))
 
 
+def ya_hay_segmentacion_pendiente(service, folder_id):
+    # procesar_drive.py identifica la Segmentación de una ronda por el prefijo
+    # 'segment' en el nombre (ver file_ids['segmentacion']); si ese archivo
+    # sigue ahí es porque el reporte diario todavía no corrió y lo archivó en
+    # Historial. Mientras siga pendiente, no se debe mandar otra Segmentación
+    # encima: el reporte tomaría cualquiera de las dos y generaría datos mal.
+    query = f"'{folder_id}' in parents and trashed = false"
+    results = service.files().list(
+        q=query,
+        fields="files(name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
+    return any(f["name"].lower().startswith("segment") for f in results.get("files", []))
+
+
 def main():
     if not CURSALAB_FOLDER_ID:
         raise ValueError("La variable de entorno 'GDRIVE_CURSALAB_FOLDER_ID' no está configurada.")
@@ -102,6 +118,15 @@ def main():
         anteriores = candidatos[:-1]
 
         destino_id = DESTINOS[marca]
+
+        if ya_hay_segmentacion_pendiente(service, destino_id):
+            print(
+                f"Aviso: Inputs de {marca} todavía tiene una Segmentación sin procesar "
+                f"(el reporte diario no ha corrido). '{mas_reciente['name']}' se deja "
+                "esperando en 'archivos cursalab' hasta que se libere Inputs."
+            )
+            continue
+
         move_file(service, mas_reciente["id"], CURSALAB_FOLDER_ID, destino_id)
         print(f"Movido: '{mas_reciente['name']}' -> Inputs de {marca}")
 
