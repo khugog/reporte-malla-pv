@@ -143,3 +143,24 @@ def move_file(service, file_id, current_parent_id, new_parent_id):
         fields="id, parents",
         supportsAllDrives=True
     ).execute()
+
+
+def copy_file(service, file_id, new_parent_id, new_name=None):
+    body = {"parents": [new_parent_id]}
+    if new_name:
+        body["name"] = new_name
+    copied = service.files().copy(
+        fileId=file_id,
+        body=body,
+        fields="id",
+        supportsAllDrives=True
+    ).execute()
+    return copied["id"]
+
+
+def trash_file(service, file_id):
+    service.files().update(
+        fileId=file_id,
+        body={"trashed": True},
+        supportsAllDrives=True
+    ).execute()

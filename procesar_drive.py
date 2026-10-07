@@ -116,10 +116,26 @@ def main():
         print("No hay archivos pendientes en Inputs. No se genera reporte.")
         return
 
-    # Si hay algunos insumos de ronda pero no todos, es un estado inválido que requiere atención
+    # Si hay algunos insumos de ronda pero no todos: no se puede generar el
+    # reporte (faltan datos), pero tampoco se deja todo atascado en Inputs
+    # esperando a mano. Se archiva lo que SÍ llegó en Historial/YYYY-MM-DD/,
+    # igual que se archivaría si el reporte se hubiera generado con éxito, para
+    # que si más adelante se recuerda que ese día faltó algo, se pueda sacar
+    # de Historial y completar el reporte manualmente.
     missing_trigger = [k for k in trigger_keys if k not in file_ids]
     if missing_trigger:
-        raise ValueError(f"Faltan archivos requeridos en la carpeta de Google Drive: {missing_trigger}")
+        print(
+            f"Insumos incompletos en Inputs (faltan: {missing_trigger}). "
+            "No se genera reporte; se archiva lo que sí llegó para revisión manual."
+        )
+        today_str = datetime.now(TZ_PERU).strftime('%Y-%m-%d')
+        historial_subfolder_id = find_or_create_subfolder(service, historial_folder_id, today_str)
+        for key, (file_id, original_name) in file_ids.items():
+            if key in base_keys:
+                continue
+            move_file(service, file_id, input_folder_id, historial_subfolder_id)
+            print(f"Archivado (insumos incompletos): {original_name}")
+        return
 
     missing_base = [k for k in base_keys if k not in file_ids]
     if missing_base:

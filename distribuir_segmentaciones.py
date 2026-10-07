@@ -1,11 +1,13 @@
+import json
 import os
 import re
 import unicodedata
 from collections import defaultdict
 
-from drive_common import get_drive_service, move_file
+from drive_common import copy_file, download_text, find_file_in_folder, get_drive_service, trash_file, upsert_text_file
 
 FECHA_EN_NOMBRE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+ESTADO_NOMBRE = ".distribucion_state.json"
 
 # Carpeta compartida donde Cursalab va dejando automáticamente los archivos de
 # Segmentación de las 4 marcas, todos mezclados en un mismo lugar.
@@ -38,6 +40,15 @@ def normalizar(texto):
     return texto
 
 
+def es_archivo_segmentacion(nombre_archivo):
+    # El nombre debe decir "Segmentación" Y "Malla" (confirmado con el usuario:
+    # así nombra Cursalab todos los archivos reales hoy en día). Exigir ambas
+    # palabras evita copiar por error cualquier otro archivo que caiga en esta
+    # carpeta compartida, aunque mencione el nombre de una marca.
+    nombre_normalizado = normalizar(nombre_archivo)
+    return "segmentacion" in nombre_normalizado and "malla" in nombre_normalizado
+
+
 def detectar_marca(nombre_archivo):
     nombre_normalizado = normalizar(nombre_archivo)
     for marca, claves in PALABRAS_CLAVE.items():
@@ -55,20 +66,39 @@ def clave_de_orden(archivo):
     return (fecha_nombre, archivo.get("modifiedTime", ""))
 
 
-def ya_hay_segmentacion_pendiente(service, folder_id):
-    # procesar_drive.py identifica la Segmentación de una ronda por el prefijo
-    # 'segment' en el nombre (ver file_ids['segmentacion']); si ese archivo
-    # sigue ahí es porque el reporte diario todavía no corrió y lo archivó en
-    # Historial. Mientras siga pendiente, no se debe mandar otra Segmentación
-    # encima: el reporte tomaría cualquiera de las dos y generaría datos mal.
+def reemplazar_segmentacion_en_inputs(service, folder_id):
+    # El usuario pidió que, si ya hay una Segmentación de ronda anterior sin
+    # procesar en Inputs (el reporte diario todavia no corrio), la de hoy la
+    # REEMPLACE (no que se acumulen ni que se bloquee la nueva). Se borran
+    # todos los archivos que empiecen con 'segment' antes de copiar el nuevo.
     query = f"'{folder_id}' in parents and trashed = false"
     results = service.files().list(
         q=query,
-        fields="files(name)",
+        fields="files(id, name)",
         supportsAllDrives=True,
         includeItemsFromAllDrives=True
     ).execute()
-    return any(f["name"].lower().startswith("segment") for f in results.get("files", []))
+    for f in results.get("files", []):
+        if f["name"].lower().startswith("segment"):
+            trash_file(service, f["id"])
+            print(f"Reemplazado: se eliminó la Segmentación anterior '{f['name']}' de Inputs.")
+
+
+def cargar_estado(service):
+    archivo_estado = find_file_in_folder(service, CURSALAB_FOLDER_ID, ESTADO_NOMBRE)
+    if not archivo_estado:
+        return {}
+    try:
+        return json.loads(download_text(service, archivo_estado["id"]))
+    except (ValueError, json.JSONDecodeError):
+        return {}
+
+
+def guardar_estado(service, estado):
+    upsert_text_file(
+        service, CURSALAB_FOLDER_ID, ESTADO_NOMBRE,
+        json.dumps(estado), mime_type="application/json"
+    )
 
 
 def main():
@@ -80,6 +110,7 @@ def main():
         raise ValueError(f"Faltan los folder IDs de destino para: {faltantes}")
 
     service = get_drive_service()
+    estado = cargar_estado(service)
 
     print("Listando archivos en 'archivos cursalab'...")
     query = f"'{CURSALAB_FOLDER_ID}' in parents and trashed = false"
@@ -91,9 +122,11 @@ def main():
     ).execute()
     files = results.get("files", [])
 
-    # Las subcarpetas (si alguna vez se crea alguna ahí) no son archivos a
-    # distribuir, se ignoran.
-    archivos = [f for f in files if f.get("mimeType") != "application/vnd.google-apps.folder"]
+    # Las subcarpetas y el propio archivo de estado no son candidatos a distribuir.
+    archivos = [
+        f for f in files
+        if f.get("mimeType") != "application/vnd.google-apps.folder" and f["name"] != ESTADO_NOMBRE
+    ]
 
     if not archivos:
         print("No hay archivos pendientes en 'archivos cursalab'.")
@@ -101,45 +134,57 @@ def main():
 
     candidatos_por_marca = defaultdict(list)
     sin_identificar = []
+    ignorados = []
     for archivo in archivos:
+        if not es_archivo_segmentacion(archivo["name"]):
+            ignorados.append(archivo["name"])
+            continue
+
         marca = detectar_marca(archivo["name"])
         if marca is None:
             sin_identificar.append(archivo["name"])
             continue
         candidatos_por_marca[marca].append(archivo)
 
-    # Si Cursalab dejó más de un archivo pendiente para la misma marca (por
-    # ejemplo, nadie corrió esto en varios días y se acumularon 2 o 3), solo se
-    # sube a Inputs el más reciente; los demás se dejan intactos en Cursalab
-    # para no mandar varias Segmentaciones a la vez y confundir el reporte.
+    # Como ahora se COPIA (el original se queda en Cursalab para siempre), hay
+    # que recordar que archivo ya se distribuyo para no volver a copiarlo cada
+    # vez que corre este script. Si el "mas reciente" de una marca cambia (una
+    # Segmentacion nueva de un dia distinto), se detecta por su ID y se vuelve
+    # a copiar, reemplazando lo que hubiera en Inputs.
     for marca, candidatos in candidatos_por_marca.items():
         candidatos.sort(key=clave_de_orden)
         mas_reciente = candidatos[-1]
         anteriores = candidatos[:-1]
 
-        destino_id = DESTINOS[marca]
-
-        if ya_hay_segmentacion_pendiente(service, destino_id):
-            print(
-                f"Aviso: Inputs de {marca} todavía tiene una Segmentación sin procesar "
-                f"(el reporte diario no ha corrido). '{mas_reciente['name']}' se deja "
-                "esperando en 'archivos cursalab' hasta que se libere Inputs."
-            )
+        if estado.get(marca) == mas_reciente["id"]:
+            print(f"Sin novedad para {marca}: '{mas_reciente['name']}' ya fue distribuido antes.")
             continue
 
-        move_file(service, mas_reciente["id"], CURSALAB_FOLDER_ID, destino_id)
-        print(f"Movido: '{mas_reciente['name']}' -> Inputs de {marca}")
+        destino_id = DESTINOS[marca]
+        reemplazar_segmentacion_en_inputs(service, destino_id)
+        copy_file(service, mas_reciente["id"], destino_id)
+        print(f"Copiado: '{mas_reciente['name']}' -> Inputs de {marca}")
+
+        estado[marca] = mas_reciente["id"]
 
         for viejo in anteriores:
             print(
                 f"Aviso: '{viejo['name']}' es una Segmentación de {marca} más antigua "
-                "que la que se acaba de mover; se dejó sin mover en 'archivos cursalab'."
+                "que la que se acaba de copiar; se deja intacta en 'archivos cursalab'."
             )
+
+    guardar_estado(service, estado)
 
     if sin_identificar:
         print(
-            "Aviso: no se pudo identificar la marca de estos archivos, se dejaron "
-            f"sin mover para revisión manual: {sin_identificar}"
+            "Aviso: no se pudo identificar la marca de estos archivos de Segmentación, "
+            f"se dejaron sin copiar para revisión manual: {sin_identificar}"
+        )
+
+    if ignorados:
+        print(
+            "Ignorados (no son archivos de Segmentación, se dejan intactos): "
+            f"{ignorados}"
         )
 
     print("Distribución de segmentaciones completada.")
