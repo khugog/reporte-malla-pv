@@ -3,9 +3,20 @@ import os
 import re
 import unicodedata
 from collections import defaultdict
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from drive_common import copy_file, download_text, find_file_in_folder, get_drive_service, trash_file, upsert_text_file
+from drive_common import (
+    copy_file,
+    download_text,
+    find_file_in_folder,
+    find_or_create_subfolder,
+    get_drive_service,
+    move_file,
+    upsert_text_file,
+)
 
+TZ_PERU = ZoneInfo("America/Lima")
 FECHA_EN_NOMBRE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 ESTADO_NOMBRE = ".distribucion_state.json"
 
@@ -20,6 +31,17 @@ DESTINOS = {
     "PlazaVea": os.environ.get("GDRIVE_INPUT_FOLDER_ID_PLAZAVEA"),
     "Oslo": os.environ.get("GDRIVE_INPUT_FOLDER_ID_OSLO"),
     "Merkao": os.environ.get("GDRIVE_INPUT_FOLDER_ID_MERKAO"),
+}
+
+# Carpeta "Historial" de cada malla (mismos secrets que ya usa run_report_*.yml).
+# Si una Segmentación pendiente en Inputs se reemplaza ANTES de que el reporte
+# diario alcance a usarla, no se pierde: se archiva aquí (con la fecha de hoy),
+# igual que si el reporte la hubiera consumido con éxito.
+HISTORIALES = {
+    "Makro": os.environ.get("GDRIVE_HISTORIAL_FOLDER_ID"),
+    "PlazaVea": os.environ.get("GDRIVE_HISTORIAL_FOLDER_ID_PLAZAVEA"),
+    "Oslo": os.environ.get("GDRIVE_HISTORIAL_FOLDER_ID_OSLO"),
+    "Merkao": os.environ.get("GDRIVE_HISTORIAL_FOLDER_ID_MERKAO"),
 }
 
 # Palabras clave (ya normalizadas: minúsculas, sin tildes/espacios/guiones) que
@@ -66,11 +88,13 @@ def clave_de_orden(archivo):
     return (fecha_nombre, archivo.get("modifiedTime", ""))
 
 
-def reemplazar_segmentacion_en_inputs(service, folder_id):
+def reemplazar_segmentacion_en_inputs(service, folder_id, historial_folder_id):
     # El usuario pidió que, si ya hay una Segmentación de ronda anterior sin
     # procesar en Inputs (el reporte diario todavia no corrio), la de hoy la
-    # REEMPLACE (no que se acumulen ni que se bloquee la nueva). Se borran
-    # todos los archivos que empiecen con 'segment' antes de copiar el nuevo.
+    # REEMPLACE (no que se acumulen ni que se bloquee la nueva). La que se
+    # reemplaza NO se borra: se archiva en Historial/HOY, porque nunca llegó a
+    # usarse en un reporte y se perdería el rastro de esa ronda si solo se
+    # mandara a la papelera.
     query = f"'{folder_id}' in parents and trashed = false"
     results = service.files().list(
         q=query,
@@ -78,10 +102,18 @@ def reemplazar_segmentacion_en_inputs(service, folder_id):
         supportsAllDrives=True,
         includeItemsFromAllDrives=True
     ).execute()
-    for f in results.get("files", []):
-        if f["name"].lower().startswith("segment"):
-            trash_file(service, f["id"])
-            print(f"Reemplazado: se eliminó la Segmentación anterior '{f['name']}' de Inputs.")
+    pendientes = [f for f in results.get("files", []) if f["name"].lower().startswith("segment")]
+    if not pendientes:
+        return
+
+    today_str = datetime.now(TZ_PERU).strftime('%Y-%m-%d')
+    historial_subfolder_id = find_or_create_subfolder(service, historial_folder_id, today_str)
+    for f in pendientes:
+        move_file(service, f["id"], folder_id, historial_subfolder_id)
+        print(
+            f"Reemplazado: '{f['name']}' no llegó a usarse en un reporte, "
+            f"se archivó en Historial/{today_str}/ antes de poner el nuevo."
+        )
 
 
 def cargar_estado(service):
@@ -108,6 +140,10 @@ def main():
     faltantes = [marca for marca, folder_id in DESTINOS.items() if not folder_id]
     if faltantes:
         raise ValueError(f"Faltan los folder IDs de destino para: {faltantes}")
+
+    faltantes_historial = [marca for marca, folder_id in HISTORIALES.items() if not folder_id]
+    if faltantes_historial:
+        raise ValueError(f"Faltan los folder IDs de Historial para: {faltantes_historial}")
 
     service = get_drive_service()
     estado = cargar_estado(service)
@@ -161,7 +197,7 @@ def main():
             continue
 
         destino_id = DESTINOS[marca]
-        reemplazar_segmentacion_en_inputs(service, destino_id)
+        reemplazar_segmentacion_en_inputs(service, destino_id, HISTORIALES[marca])
         copy_file(service, mas_reciente["id"], destino_id)
         print(f"Copiado: '{mas_reciente['name']}' -> Inputs de {marca}")
 
