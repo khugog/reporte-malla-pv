@@ -1,11 +1,11 @@
-name: Distribuir Segmentaciones de Cursalab
+name: Distribuir Segmentaciones y Employees
 
 on:
   # Permite ejecutar el flujo manualmente desde la pestaña Actions en GitHub
   workflow_dispatch:
 
-  # Revisa la carpeta compartida "archivos cursalab" cada 15 minutos y reparte
-  # cada Segmentación a la malla que le corresponde (Makro, PlazaVea, Oslo, Merkao)
+  # Revisa las carpetas compartidas ("archivos cursalab" y la de Employees)
+  # cada 15 minutos y reparte cada archivo a su(s) malla(s) correspondiente(s),
   # ANTES de que corran los reportes de cada marca (que se ejecutan a las 18:00 UTC).
   schedule:
     - cron: '*/15 * * * *'
@@ -39,3 +39,14 @@ jobs:
         GDRIVE_INPUT_FOLDER_ID_MERKAO: ${{ secrets.GDRIVE_INPUT_FOLDER_ID_MERKAO }}
       run: |
         python distribuir_segmentaciones.py
+
+    - name: Repartir Employees a las 4 mallas
+      env:
+        GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+        GDRIVE_EMPLOYEES_FOLDER_ID: ${{ secrets.GDRIVE_EMPLOYEES_FOLDER_ID }}
+        GDRIVE_INPUT_FOLDER_ID: ${{ secrets.GDRIVE_INPUT_FOLDER_ID }}
+        GDRIVE_INPUT_FOLDER_ID_PLAZAVEA: ${{ secrets.GDRIVE_INPUT_FOLDER_ID_PLAZAVEA }}
+        GDRIVE_INPUT_FOLDER_ID_OSLO: ${{ secrets.GDRIVE_INPUT_FOLDER_ID_OSLO }}
+        GDRIVE_INPUT_FOLDER_ID_MERKAO: ${{ secrets.GDRIVE_INPUT_FOLDER_ID_MERKAO }}
+      run: |
+        python distribuir_employees.py
